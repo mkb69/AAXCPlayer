@@ -1,0 +1,8 @@
+.DS_store
+*.m4a
+*.aaxc
+test/
+.build/
+CLAUDE.md
+claude-memory.md
+IMPLEMENTATION_SUMMARY.md
