@@ -38,6 +38,12 @@ public class AAXCSelectivePlayer {
     
     /// Convert AAXC to M4A by selectively decrypting only audio samples
     public func convertToM4A() throws -> Data {
+        let (data, _) = try convertToM4AWithMetadata()
+        return data
+    }
+    
+    /// Convert AAXC to M4A and extract metadata
+    public func convertToM4AWithMetadata() throws -> (data: Data, metadata: MP4StructureParser.Metadata) {
         // Parse the complete MP4 structure
         let structure = try parser.parseStructure()
         debugLog("🔍 Parsed \(structure.tracks.count) tracks, mdat at offset \(structure.mdatOffset)")
@@ -79,21 +85,34 @@ public class AAXCSelectivePlayer {
             // Filter out invalid samples for now
             let validSamples = audioSamples.filter { $0.offset + UInt64($0.size) <= fileSize }
             debugLog("   Using \(validSamples.count) valid samples")
-            return try createDecryptedMP4(
+            
+            // Extract metadata
+            let metadata = try parser.parseMetadata()
+            debugLog("📚 Extracted metadata - Title: \(metadata.title ?? "N/A"), Artist: \(metadata.artist ?? "N/A")")
+            
+            let decryptedData = try createDecryptedMP4(
                 originalData: parser.data,
                 audioSamples: validSamples,
                 mdatOffset: structure.mdatOffset,
                 mdatSize: structure.mdatSize
             )
+            
+            return (data: decryptedData, metadata: metadata)
         }
         
+        // Extract metadata before decryption
+        let metadata = try parser.parseMetadata()
+        debugLog("📚 Extracted metadata - Title: \(metadata.title ?? "N/A"), Artist: \(metadata.artist ?? "N/A")")
+        
         // Create output data with selectively decrypted audio
-        return try createDecryptedMP4(
+        let decryptedData = try createDecryptedMP4(
             originalData: parser.data,
             audioSamples: audioSamples,
             mdatOffset: structure.mdatOffset,
             mdatSize: structure.mdatSize
         )
+        
+        return (data: decryptedData, metadata: metadata)
     }
     
     // MARK: - Private Implementation

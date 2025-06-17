@@ -89,6 +89,26 @@ public class AAXCPlayer {
         return try player.convertToM4A()
     }
     
+    /// Convert AAXC to M4A and extract metadata
+    /// - Parameter inputData: AAXC file data
+    /// - Returns: Tuple containing decrypted M4A data and extracted metadata
+    /// - Throws: `AAXCPlayerError` if decryption fails or file format is invalid
+    /// - Note: This method performs both decryption and metadata extraction in a single pass
+    public func convertToM4AWithMetadata(inputData: Data) throws -> (data: Data, metadata: MP4StructureParser.Metadata) {
+        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
+        return try player.convertToM4AWithMetadata()
+    }
+    
+    /// Extract metadata from AAXC file without decrypting
+    /// - Parameter inputData: AAXC file data
+    /// - Returns: Metadata extracted from the file including title, artist, chapters, etc.
+    /// - Throws: `MP4ParserError` if the file structure is invalid
+    /// - Note: This method only reads metadata without performing any decryption
+    public func extractMetadata(inputData: Data) throws -> MP4StructureParser.Metadata {
+        let parser = MP4StructureParser(data: inputData)
+        return try parser.parseMetadata()
+    }
+    
     // MARK: - Private Methods
     
     private func decryptAES128CBC(data: Data) throws -> Data {
@@ -135,7 +155,7 @@ public class AAXCPlayer {
 
 // MARK: - Data Extension for Hex Conversion
 
-extension Data {
+public extension Data {
     init?(hexString: String) {
         let cleanHex = hexString.replacingOccurrences(of: " ", with: "")
         guard cleanHex.count % 2 == 0 else { return nil }

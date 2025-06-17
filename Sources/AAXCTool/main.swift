@@ -21,6 +21,7 @@ do {
     let inputData = try Data(contentsOf: URL(fileURLWithPath: aaxcPath))
     print("📊 Input size: \(inputData.count) bytes")
     
+    
     // Load keys from test/keys.json
     let keysPath = "test/keys.json"
     let keysData = try Data(contentsOf: URL(fileURLWithPath: keysPath))
@@ -44,13 +45,20 @@ do {
     print("🏗️ Creating selective player...")
     let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
     
-    // Convert AAXC to M4A with selective decryption 
-    print("🔧 Converting with selective decryption...")
-    let outputData = try player.convertToM4A()
+    // Convert AAXC to M4A with selective decryption and extract metadata
+    print("🔧 Converting with selective decryption and extracting metadata...")
+    let (outputData, metadata) = try player.convertToM4AWithMetadata()
     
-    // Save output
+    // Save M4A output
     try outputData.write(to: URL(fileURLWithPath: outputPath))
-    print("💾 Saved to: \(outputPath)")
+    print("💾 Saved M4A to: \(outputPath)")
+    
+    // Save metadata as JSON
+    let jsonPath = outputPath.replacingOccurrences(of: ".m4a", with: ".json")
+    let jsonDict = metadata.toJSON(fileSize: inputData.count)
+    let jsonData = try JSONSerialization.data(withJSONObject: jsonDict, options: [.prettyPrinted, .sortedKeys])
+    try jsonData.write(to: URL(fileURLWithPath: jsonPath))
+    print("💾 Saved metadata to: \(jsonPath)")
     
     print()
     print("🎉 SUCCESS! Pure Swift AAXC decryption completed!")
@@ -111,25 +119,3 @@ do {
 
 print()
 print("🏁 Pure Swift AAXC conversion completed!")
-
-// MARK: - Helper Extensions
-
-extension Data {
-    init?(hexString: String) {
-        let cleanedHex = hexString.replacingOccurrences(of: " ", with: "")
-        guard cleanedHex.count % 2 == 0 else { return nil }
-        
-        var data = Data()
-        var index = cleanedHex.startIndex
-        
-        while index < cleanedHex.endIndex {
-            let nextIndex = cleanedHex.index(index, offsetBy: 2)
-            let byteString = cleanedHex[index..<nextIndex]
-            guard let byte = UInt8(byteString, radix: 16) else { return nil }
-            data.append(byte)
-            index = nextIndex
-        }
-        
-        self = data
-    }
-}
