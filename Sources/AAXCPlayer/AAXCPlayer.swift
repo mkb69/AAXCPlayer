@@ -89,16 +89,6 @@ public class AAXCPlayer {
         return try player.convertToM4A()
     }
     
-    /// Convert AAXC to M4A and extract metadata
-    /// - Parameter inputData: AAXC file data
-    /// - Returns: Tuple containing decrypted M4A data and extracted metadata
-    /// - Throws: `AAXCPlayerError` if decryption fails or file format is invalid
-    /// - Note: This method performs both decryption and metadata extraction in a single pass
-    public func convertToM4AWithMetadata(inputData: Data) throws -> (data: Data, metadata: MP4StructureParser.Metadata) {
-        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
-        return try player.convertToM4AWithMetadata()
-    }
-    
     /// Extract metadata from AAXC file without decrypting
     /// - Parameter inputData: AAXC file data
     /// - Returns: Metadata extracted from the file including title, artist, chapters, etc.

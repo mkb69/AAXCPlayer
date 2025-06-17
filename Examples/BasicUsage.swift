@@ -28,20 +28,35 @@ class SimpleAAXCAudioPlayer {
         }
         print("🔑 Keys validated")
         
-        // Step 3: Create the player and convert AAXC to M4A
-        print("🔄 Converting AAXC to M4A...")
+        // Step 3: Create the player
         let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: aaxcData)
+        
+        // Step 4: Extract metadata (no decryption needed)
+        print("📚 Extracting metadata...")
+        let metadata = try player.parseMetadata()
+        print("📚 Title: \(metadata.title ?? "Unknown")")
+        print("🎤 Artist: \(metadata.artist ?? "Unknown")")
+        
+        // Step 5: Convert AAXC to M4A
+        print("🔄 Converting AAXC to M4A...")
         let m4aData = try player.convertToM4A()
         print("✅ Conversion complete: \(m4aData.count) bytes")
         
-        // Step 4: Save to temporary file for AVFoundation
+        // Step 6: Save to temporary files for AVFoundation and metadata
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("m4a")
         try m4aData.write(to: tempURL)
         print("💾 Saved temporary M4A file")
         
-        // Step 5: Play with standard AVFoundation
+        // Save metadata as JSON
+        let jsonURL = tempURL.deletingPathExtension().appendingPathExtension("json")
+        let jsonDict = metadata.toJSON(fileSize: aaxcData.count)
+        let jsonData = try JSONSerialization.data(withJSONObject: jsonDict, options: .prettyPrinted)
+        try jsonData.write(to: jsonURL)
+        print("📋 Saved metadata JSON")
+        
+        // Step 7: Play with standard AVFoundation
         await MainActor.run {
             let asset = AVAsset(url: tempURL)
             let playerItem = AVPlayerItem(asset: asset)
@@ -143,10 +158,13 @@ func example3_ConvertInMemory() {
                 return
             }
             
-            // Convert to M4A data in memory
+            // Create player and extract metadata first
             let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: aaxcData)
-            let m4aData = try player.convertToM4A()
+            let metadata = try player.parseMetadata()
+            print("📚 Metadata - Title: \(metadata.title ?? "Unknown"), Chapters: \(metadata.chapters.count)")
             
+            // Convert to M4A data in memory
+            let m4aData = try player.convertToM4A()
             print("✅ Conversion completed: \(m4aData.count) bytes in memory")
             
             // IMPORTANT: M4A data is now in memory only

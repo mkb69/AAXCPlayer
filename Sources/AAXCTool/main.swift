@@ -45,9 +45,13 @@ do {
     print("🏗️ Creating selective player...")
     let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
     
-    // Convert AAXC to M4A with selective decryption and extract metadata
-    print("🔧 Converting with selective decryption and extracting metadata...")
-    let (outputData, metadata) = try player.convertToM4AWithMetadata()
+    // Extract metadata first (no decryption needed)
+    print("📚 Extracting metadata...")
+    let metadata = try player.parseMetadata()
+    
+    // Convert AAXC to M4A with selective decryption
+    print("🔧 Converting with selective decryption...")
+    let outputData = try player.convertToM4A()
     
     // Save M4A output
     try outputData.write(to: URL(fileURLWithPath: outputPath))

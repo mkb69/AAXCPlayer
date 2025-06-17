@@ -23,6 +23,7 @@ This library exists solely to provide compatibility and accessibility for legall
 - ✅ Selective decryption that preserves MP4 structure
 - ✅ Native AVFoundation integration for seamless playback
 - ✅ Command-line tool for AAXC to M4A conversion
+- ✅ Metadata extraction (title, artist, chapters, cover art, etc.)
 - ✅ Comprehensive error handling
 - ✅ Unit tests included
 
@@ -73,7 +74,9 @@ Convert AAXC files to M4A format:
 swift run aaxc-tool
 ```
 
-Output will be saved as `test/swift.m4a`.
+Output will be saved as:
+- `test/swift.m4a` - The converted audio file
+- `test/swift.json` - Metadata extracted from the file
 
 ### Basic Usage in iOS App
 
@@ -97,6 +100,9 @@ func playAAXCFile(aaxcURL: URL, keyHex: String, ivHex: String) async throws {
     // Create selective player
     let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
     
+    // Extract metadata (no decryption needed)
+    let metadata = try player.parseMetadata()
+    
     // Convert to M4A format
     let m4aData = try player.convertToM4A()
     
@@ -106,6 +112,12 @@ func playAAXCFile(aaxcURL: URL, keyHex: String, ivHex: String) async throws {
         .appendingPathExtension("m4a")
     
     try m4aData.write(to: tempURL)
+    
+    // Save metadata as JSON
+    let jsonURL = tempURL.deletingPathExtension().appendingPathExtension("json")
+    let jsonDict = metadata.toJSON(fileSize: inputData.count)
+    let jsonData = try JSONSerialization.data(withJSONObject: jsonDict, options: .prettyPrinted)
+    try jsonData.write(to: jsonURL)
     
     // Play with AVFoundation
     let asset = AVAsset(url: tempURL)
@@ -146,11 +158,34 @@ func convertAAXCInMemory(aaxcURL: URL, keyHex: String, ivHex: String) throws -> 
     
     let inputData = try Data(contentsOf: aaxcURL)
     let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
+    
+    // Optional: Extract metadata first if needed
+    let metadata = try player.parseMetadata()
+    print("Title: \(metadata.title ?? "Unknown")")
+    
     let m4aData = try player.convertToM4A()
     
     // IMPORTANT: Only use temporary files - never save to accessible storage
     // Return data for immediate use or temporary file creation only
     return m4aData
+}
+```
+
+### Metadata-Only Extraction
+
+Extract metadata without decrypting the audio data:
+
+```swift
+func extractMetadataOnly(aaxcURL: URL, keyHex: String, ivHex: String) throws -> MP4StructureParser.Metadata {
+    guard let key = Data(hexString: keyHex), let iv = Data(hexString: ivHex) else {
+        throw AAXCError.invalidKey
+    }
+    
+    let inputData = try Data(contentsOf: aaxcURL)
+    let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
+    
+    // Extract metadata without decrypting audio
+    return try player.parseMetadata()
 }
 ```
 
