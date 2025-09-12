@@ -83,7 +83,7 @@ Output will be saved as:
 ```swift
 import AAXCPlayer
 
-// Convert AAXC to M4A and play
+// Convert AAXC to M4A and play using streaming
 func playAAXCFile(aaxcURL: URL, keyHex: String, ivHex: String) async throws {
     // Convert hex strings to Data
     guard let key = Data(hexString: keyHex), key.count == 16 else {
@@ -94,28 +94,25 @@ func playAAXCFile(aaxcURL: URL, keyHex: String, ivHex: String) async throws {
         throw AAXCError.invalidIVSize
     }
     
-    // Load AAXC file
-    let inputData = try Data(contentsOf: aaxcURL)
-    
-    // Create selective player
-    let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
+    // Create selective player with streaming support
+    let player = try AAXCSelectivePlayer(key: key, iv: iv, inputURL: aaxcURL)
     
     // Extract metadata (no decryption needed)
     let metadata = try player.parseMetadata()
     
-    // Convert to M4A format
-    let m4aData = try player.convertToM4A()
-    
-    // Save to temporary file for playback
+    // Convert to M4A format using streaming (efficient for large files)
     let tempURL = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString)
         .appendingPathExtension("m4a")
     
-    try m4aData.write(to: tempURL)
+    try player.convertToM4A(outputPath: tempURL.path)
     
     // Save metadata as JSON
+    let fileAttributes = try FileManager.default.attributesOfItem(atPath: aaxcURL.path)
+    let fileSize = fileAttributes[.size] as? Int ?? 0
+    
     let jsonURL = tempURL.deletingPathExtension().appendingPathExtension("json")
-    let jsonDict = metadata.toJSON(fileSize: inputData.count)
+    let jsonDict = metadata.toJSON(fileSize: fileSize)
     let jsonData = try JSONSerialization.data(withJSONObject: jsonDict, options: .prettyPrinted)
     try jsonData.write(to: jsonURL)
     
@@ -137,17 +134,17 @@ func playAAXCWithKeysFile(aaxcURL: URL, keysURL: URL) async throws {
     let keysJson = try JSONSerialization.jsonObject(with: keysData) as! [String: String]
     
     guard let keyHex = keysJson["key"], let ivHex = keysJson["iv"] else {
-        throw AAXCError.invalidKey
+        throw AAXCError.invalidKeySize
     }
     
     try await playAAXCFile(aaxcURL: aaxcURL, keyHex: keyHex, ivHex: ivHex)
 }
 ```
 
-### In-Memory Conversion (Advanced Usage)
+### Streaming Conversion (Recommended for Large Files)
 
 ```swift
-func convertAAXCInMemory(aaxcURL: URL, keyHex: String, ivHex: String) throws -> Data {
+func convertAAXCWithStreaming(aaxcURL: URL, keyHex: String, ivHex: String) throws {
     guard let key = Data(hexString: keyHex), key.count == 16 else {
         throw AAXCError.invalidKeySize
     }
@@ -156,18 +153,22 @@ func convertAAXCInMemory(aaxcURL: URL, keyHex: String, ivHex: String) throws -> 
         throw AAXCError.invalidIVSize
     }
     
-    let inputData = try Data(contentsOf: aaxcURL)
-    let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
+    // Use file path for efficient streaming (no full file loaded in memory)
+    let player = try AAXCSelectivePlayer(key: key, iv: iv, inputPath: aaxcURL.path)
     
     // Optional: Extract metadata first if needed
     let metadata = try player.parseMetadata()
     print("Title: \(metadata.title ?? "Unknown")")
     
-    let m4aData = try player.convertToM4A()
+    // Stream conversion directly to output file
+    let tempURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathExtension("m4a")
+    
+    try player.convertToM4A(outputPath: tempURL.path)
     
     // IMPORTANT: Only use temporary files - never save to accessible storage
-    // Return data for immediate use or temporary file creation only
-    return m4aData
+    // Temporary files are automatically cleaned up by the system
 }
 ```
 
@@ -176,16 +177,14 @@ func convertAAXCInMemory(aaxcURL: URL, keyHex: String, ivHex: String) throws -> 
 Extract metadata without decrypting the audio data:
 
 ```swift
-func extractMetadataOnly(aaxcURL: URL, keyHex: String, ivHex: String) throws -> MP4StructureParser.Metadata {
-    guard let key = Data(hexString: keyHex), let iv = Data(hexString: ivHex) else {
-        throw AAXCError.invalidKey
-    }
+func extractMetadataOnly(aaxcURL: URL) throws -> MP4StructureParser.Metadata {
+    // Metadata extraction doesn't require decryption keys
+    // Use the parser directly for efficiency
+    let fileHandle = try FileHandle(forReadingFrom: aaxcURL)
+    let parser = MP4StructureParser(fileHandle: fileHandle)
     
-    let inputData = try Data(contentsOf: aaxcURL)
-    let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
-    
-    // Extract metadata without decrypting audio
-    return try player.parseMetadata()
+    // Extract metadata without any decryption
+    return try parser.parseMetadata()
 }
 ```
 
@@ -209,8 +208,9 @@ This package implements a comprehensive approach for AAXC file playback:
 
 ## Error Handling
 
-The package provides comprehensive error handling:
+The package provides comprehensive error handling with three error enums:
 
+### AAXCError (AAXCSelectivePlayer)
 ```swift
 enum AAXCError: Error {
     case invalidKeySize     // Key must be exactly 16 bytes
@@ -220,6 +220,27 @@ enum AAXCError: Error {
     case decryptionFailed   // AES decryption failed
     case invalidData       // Invalid file data
     case invalidSampleOffset // Audio sample offset is invalid
+}
+```
+
+### AAXCPlayerError (AAXCPlayer)
+```swift
+enum AAXCPlayerError: Error {
+    case invalidKeySize     // Key must be exactly 16 bytes
+    case invalidIVSize      // IV must be exactly 16 bytes
+    case invalidFileFormat  // Not a valid AAXC file
+    case decryptionFailed   // AES decryption failed
+    case unsupportedFormat  // File format not supported
+}
+```
+
+### MP4ParserError (MP4StructureParser)
+```swift
+enum MP4ParserError: Error {
+    case invalidAtomSize    // MP4 atom size is invalid
+    case notAAXCFile       // File is not an AAXC file
+    case noAudioTrack      // No audio track found
+    case invalidTrackStructure // Track structure is malformed
 }
 ```
 
@@ -254,8 +275,10 @@ swift test
 ## Performance Considerations
 
 ### Memory Usage
-- **Selective Decryption**: Processes individual audio samples efficiently
-- **In-Place Decryption**: Modifies data in place to minimize memory usage d
+- **Streaming Architecture**: Files are processed in chunks without loading entire file into memory
+- **Selective Decryption**: Only audio samples are decrypted, preserving container structure
+- **Efficient Processing**: Handles files of any size with minimal memory footprint
+- **In-Place Operations**: Minimizes memory allocations during decryption
 
 ## Security Notes
 
