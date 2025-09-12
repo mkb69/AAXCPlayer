@@ -139,7 +139,7 @@ final class AAXCPlayerTests: XCTestCase {
         XCTAssertEqual(result1, result2)
     }
     
-    func testMP4StructureParser() {
+    func testMP4StructureParser() throws {
         // Test with minimal MP4-like data
         let testData = Data([
             // Minimal ftyp box
@@ -153,9 +153,17 @@ final class AAXCPlayerTests: XCTestCase {
             0x6d, 0x70, 0x34, 0x32, // "mp42"
         ])
         
-        let parser = MP4StructureParser(data: testData)
+        // Create a temporary file with test data
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("test_mp4.aaxc")
+        try testData.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        
+        // Open file handle and create parser
+        let fileHandle = try FileHandle(forReadingFrom: tempURL)
+        defer { try? fileHandle.close() }
+        
+        let parser = MP4StructureParser(fileHandle: fileHandle)
         XCTAssertNotNil(parser)
-        XCTAssertEqual(parser.data.count, testData.count)
     }
     
     func testKeyValidation() {
