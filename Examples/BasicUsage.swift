@@ -15,9 +15,10 @@ class SimpleAAXCAudioPlayer {
     ///   - ivHex: 32-character hex string for the initialization vector
     func playAAXCFile(localFileURL: URL, keyHex: String, ivHex: String) async throws {
         
-        // Step 1: Load the local AAXC file
-        let aaxcData = try Data(contentsOf: localFileURL)
-        print("📁 Loaded AAXC file: \(aaxcData.count) bytes")
+        // Step 1: Get file info
+        let fileAttributes = try FileManager.default.attributesOfItem(atPath: localFileURL.path)
+        let fileSize = fileAttributes[.size] as? Int ?? 0
+        print("📁 AAXC file size: \(fileSize) bytes")
         
         // Step 2: Convert hex keys to Data
         guard let key = Data(hexString: keyHex), key.count == 16 else {
@@ -29,7 +30,7 @@ class SimpleAAXCAudioPlayer {
         print("🔑 Keys validated")
         
         // Step 3: Create the player
-        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: aaxcData)
+        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputURL: localFileURL)
         
         // Step 4: Extract metadata (no decryption needed)
         print("📚 Extracting metadata...")
@@ -37,21 +38,18 @@ class SimpleAAXCAudioPlayer {
         print("📚 Title: \(metadata.title ?? "Unknown")")
         print("🎤 Artist: \(metadata.artist ?? "Unknown")")
         
-        // Step 5: Convert AAXC to M4A
-        print("🔄 Converting AAXC to M4A...")
-        let m4aData = try player.convertToM4A()
-        print("✅ Conversion complete: \(m4aData.count) bytes")
-        
-        // Step 6: Save to temporary files for AVFoundation and metadata
+        // Step 5: Convert AAXC to M4A using streaming
+        print("🔄 Converting AAXC to M4A (streaming)...")
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("m4a")
-        try m4aData.write(to: tempURL)
+        try player.convertToM4A(outputPath: tempURL.path)
+        print("✅ Conversion complete")
         print("💾 Saved temporary M4A file")
         
         // Save metadata as JSON
         let jsonURL = tempURL.deletingPathExtension().appendingPathExtension("json")
-        let jsonDict = metadata.toJSON(fileSize: aaxcData.count)
+        let jsonDict = metadata.toJSON(fileSize: fileSize)
         let jsonData = try JSONSerialization.data(withJSONObject: jsonDict, options: .prettyPrinted)
         try jsonData.write(to: jsonURL)
         print("📋 Saved metadata JSON")
@@ -138,16 +136,13 @@ func example2_PlayFromBundle() {
     }
 }
 
-/// Example 3: Convert AAXC to M4A in memory (for advanced processing)
-func example3_ConvertInMemory() {
+/// Example 3: Convert AAXC to M4A using streaming
+func example3_ConvertStreaming() {
     let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     let aaxcURL = documentsURL.appendingPathComponent("input.aaxc")
     
     Task {
         do {
-            // Load AAXC file
-            let aaxcData = try Data(contentsOf: aaxcURL)
-            
             // Your keys
             let keyHex = "your_key_here"
             let ivHex = "your_iv_here"
@@ -159,24 +154,20 @@ func example3_ConvertInMemory() {
             }
             
             // Create player and extract metadata first
-            let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: aaxcData)
+            let player = try AAXCSelectivePlayer(key: key, iv: iv, inputURL: aaxcURL)
             let metadata = try player.parseMetadata()
             print("📚 Metadata - Title: \(metadata.title ?? "Unknown"), Chapters: \(metadata.chapters.count)")
             
-            // Convert to M4A data in memory
-            let m4aData = try player.convertToM4A()
-            print("✅ Conversion completed: \(m4aData.count) bytes in memory")
-            
-            // IMPORTANT: M4A data is now in memory only
-            // Use it for streaming, analysis, or temporary playback
-            // Never save decrypted content to accessible storage!
-            
-            // Example: Create temporary file for immediate playback only
+            // Convert to M4A using streaming (no full file loaded in memory)
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("m4a")
             
-            try m4aData.write(to: tempURL)
+            try player.convertToM4A(outputPath: tempURL.path)
+            print("✅ Conversion completed using streaming")
+            
+            // IMPORTANT: M4A is saved directly to temp file
+            // Never save decrypted content to accessible storage!
             
             // Play immediately
             let asset = AVAsset(url: tempURL)

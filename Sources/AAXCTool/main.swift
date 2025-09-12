@@ -111,7 +111,7 @@ do {
     // Convert AAXC to M4A with selective decryption using streaming
     print("🔧 Converting with selective decryption (streaming mode)...")
     let conversionStartMemory = currentMemory
-    try player.convertToM4AStreaming(outputPath: outputPath)
+    try player.convertToM4A(outputPath: outputPath)
     
     // Track memory after conversion
     currentMemory = trackMemory(label: "After conversion complete", baseline: baselineMemory)

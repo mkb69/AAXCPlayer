@@ -54,21 +54,24 @@ final class AAXCPlayerTests: XCTestCase {
             return
         }
         
-        // Create minimal test data (just enough to not crash)
+        // Create a temporary test file
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("test.aaxc")
         let testData = Data(count: 1024)
+        try testData.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
         
-        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: testData)
+        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputPath: tempURL.path)
         XCTAssertNotNil(player)
         
         // Test with invalid key size
         let invalidKey = Data(count: 8)
-        XCTAssertThrowsError(try AAXCSelectivePlayer(key: invalidKey, iv: iv, inputData: testData)) { error in
+        XCTAssertThrowsError(try AAXCSelectivePlayer(key: invalidKey, iv: iv, inputPath: tempURL.path)) { error in
             XCTAssertEqual(error as? AAXCError, .invalidKeySize)
         }
         
         // Test with invalid IV size
         let invalidIV = Data(count: 8)
-        XCTAssertThrowsError(try AAXCSelectivePlayer(key: key, iv: invalidIV, inputData: testData)) { error in
+        XCTAssertThrowsError(try AAXCSelectivePlayer(key: key, iv: invalidIV, inputPath: tempURL.path)) { error in
             XCTAssertEqual(error as? AAXCError, .invalidIVSize)
         }
     }
