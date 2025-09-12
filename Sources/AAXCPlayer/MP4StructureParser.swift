@@ -712,7 +712,7 @@ public class MP4StructureParser {
         return entries
     }
     
-    private func getSamplesPerChunk(chunkIndex: Int, track: Track) -> UInt32 {
+    public func getSamplesPerChunk(chunkIndex: Int, track: Track) -> UInt32 {
         let stsc = track.sampleTable.samplesPerChunk
         
         for i in (0..<stsc.count).reversed() {

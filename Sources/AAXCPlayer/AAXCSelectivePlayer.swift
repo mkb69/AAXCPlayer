@@ -179,19 +179,8 @@ public class AAXCSelectivePlayer {
 
         debugLog("🔄 Processing file with \(totalSamples) audio samples (streaming)")
 
-        func samplesPerChunk(at chunkIndex: Int) -> UInt32 {
-            // Replicate MP4StructureParser.getSamplesPerChunk (private there)
-            let stsc = track.sampleTable.samplesPerChunk
-            for i in stride(from: stsc.count - 1, through: 0, by: -1) {
-                if UInt32(chunkIndex + 1) >= stsc[i].firstChunk {
-                    return stsc[i].samplesPerChunk
-                }
-            }
-            return stsc.first?.samplesPerChunk ?? 1
-        }
-
         for (chunkIndex, chunkOffset) in track.sampleTable.chunkOffsets.enumerated() {
-            let samplesInChunk = Int(samplesPerChunk(at: chunkIndex))
+            let samplesInChunk = Int(parser.getSamplesPerChunk(chunkIndex: chunkIndex, track: track))
             var offsetInChunk: UInt64 = 0
 
             for _ in 0..<samplesInChunk {
