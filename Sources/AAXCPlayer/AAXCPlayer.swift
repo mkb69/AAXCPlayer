@@ -89,6 +89,26 @@ public class AAXCPlayer {
         return try player.convertToM4A()
     }
     
+    /// Convert AAXC file to M4A file using streaming (recommended for large files)
+    /// - Parameters:
+    ///   - inputPath: Path to input AAXC file
+    ///   - outputPath: Path to output M4A file
+    /// - Note: This method streams the file and doesn't load it entirely into memory
+    public func convertToM4AStreaming(inputPath: String, outputPath: String) throws {
+        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputPath: inputPath)
+        try player.convertToM4AStreaming(outputPath: outputPath)
+    }
+    
+    /// Convert AAXC file to M4A file using streaming (recommended for large files)
+    /// - Parameters:
+    ///   - inputURL: URL to input AAXC file
+    ///   - outputURL: URL to output M4A file
+    /// - Note: This method streams the file and doesn't load it entirely into memory
+    public func convertToM4AStreaming(inputURL: URL, outputURL: URL) throws {
+        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputURL: inputURL)
+        try player.convertToM4AStreaming(outputPath: outputURL.path)
+    }
+    
     /// Extract metadata from AAXC file without decrypting
     /// - Parameter inputData: AAXC file data
     /// - Returns: Metadata extracted from the file including title, artist, chapters, etc.

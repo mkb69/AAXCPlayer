@@ -17,10 +17,10 @@ print()
 do {
     print("🚀 Starting selective decryption...")
     
-    // Load input file
-    let inputData = try Data(contentsOf: URL(fileURLWithPath: aaxcPath))
-    print("📊 Input size: \(inputData.count) bytes")
-    
+    // Get input file size without loading it into memory
+    let inputAttributes = try FileManager.default.attributesOfItem(atPath: aaxcPath)
+    let inputSize = inputAttributes[.size] as? Int ?? 0
+    print("📊 Input size: \(inputSize) bytes (\(String(format: "%.1f", Double(inputSize) / 1024 / 1024)) MB)")
     
     // Load keys from test/keys.json
     let keysPath = "test/keys.json"
@@ -42,24 +42,22 @@ do {
     
     print("🔑 Using test keys...")
     
-    print("🏗️ Creating selective player...")
-    let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
+    print("🏗️ Creating selective player with streaming support...")
+    let player = try AAXCSelectivePlayer(key: key, iv: iv, inputPath: aaxcPath)
     
     // Extract metadata first (no decryption needed)
     print("📚 Extracting metadata...")
     let metadata = try player.parseMetadata()
     
-    // Convert AAXC to M4A with selective decryption
-    print("🔧 Converting with selective decryption...")
-    let outputData = try player.convertToM4A()
+    // Convert AAXC to M4A with selective decryption using streaming
+    print("🔧 Converting with selective decryption (streaming mode)...")
+    try player.convertToM4AStreaming(outputPath: outputPath)
     
-    // Save M4A output
-    try outputData.write(to: URL(fileURLWithPath: outputPath))
     print("💾 Saved M4A to: \(outputPath)")
     
     // Save metadata as JSON
     let jsonPath = outputPath.replacingOccurrences(of: ".m4a", with: ".json")
-    let jsonDict = metadata.toJSON(fileSize: inputData.count)
+    let jsonDict = metadata.toJSON(fileSize: inputSize)
     let jsonData = try JSONSerialization.data(withJSONObject: jsonDict, options: [.prettyPrinted, .sortedKeys])
     try jsonData.write(to: URL(fileURLWithPath: jsonPath))
     print("💾 Saved metadata to: \(jsonPath)")
