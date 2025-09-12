@@ -1033,9 +1033,17 @@ public class MP4StructureParser {
             return nil
         }
         
-        // TODO: Implement streaming sample extraction
-        // For now, chapters are not supported in streaming mode
-        return nil
+        // Read the sample data from file
+        let chunkOffset = track.sampleTable.chunkOffsets[chunkIndex]
+        let sampleOffset = chunkOffset + offsetInChunk
+        let sampleSize = Int(track.sampleTable.sampleSizes[sampleIndex])
+        
+        do {
+            return try readData(at: sampleOffset, length: sampleSize)
+        } catch {
+            debugLog("⚠️ Failed to read sample data at offset \(sampleOffset): \(error)")
+            return nil
+        }
     }
     
     private func parseChapterTitle(from data: Data) -> String? {
