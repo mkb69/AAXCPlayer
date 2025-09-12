@@ -29,6 +29,16 @@ public class AAXCSelectivePlayer {
         #endif
     }
     
+    deinit {
+        // Ensure OS file buffers are released when the player is deallocated
+        inputFileHandle.closeFile()
+    }
+    
+    /// Explicitly release resources early (e.g., after conversion)
+    public func close() {
+        inputFileHandle.closeFile()
+    }
+    
     /// Initialize with file path for streaming (recommended for large files)
     public init(key: Data, iv: Data, inputPath: String) throws {
         guard key.count == 16 else { throw AAXCError.invalidKeySize }
@@ -79,25 +89,14 @@ public class AAXCSelectivePlayer {
         }
         debugLog("🎵 Found audio track with \(audioTrack.sampleTable.sampleSizes.count) samples")
         
-        // Calculate locations of all audio samples
-        let audioSamples = parser.calculateAudioSampleLocations(track: audioTrack, mdatOffset: structure.mdatOffset)
-        debugLog("📍 Calculated \(audioSamples.count) audio sample locations")
-        
-        // Validate samples
-        let fileSize = inputFileHandle.seekToEndOfFile()
-        let validSamples = audioSamples.filter { $0.offset + UInt64($0.size) <= fileSize }
-        if validSamples.count < audioSamples.count {
-            debugLog("   ⚠️ Filtered out \(audioSamples.count - validSamples.count) invalid samples")
-        }
-        
-        // Create streaming decrypted MP4
+        // Create streaming decrypted MP4 without materializing all sample locations
         try createStreamingDecryptedMP4(
             inputHandle: inputFileHandle,
             outputPath: outputPath,
-            audioSamples: validSamples,
-            mdatOffset: structure.mdatOffset,
-            mdatSize: structure.mdatSize
+            track: audioTrack
         )
+        // Close input handle to drop file-backed caches ASAP
+        close()
     }
     
     /// Parse metadata from AAXC file without decrypting audio
@@ -137,7 +136,7 @@ public class AAXCSelectivePlayer {
     
     
     /// Create decrypted MP4 using streaming approach (no double memory usage)
-    private func createStreamingDecryptedMP4(inputHandle: FileHandle, outputPath: String, audioSamples: [MP4StructureParser.AudioSample], mdatOffset: UInt64, mdatSize: UInt64) throws {
+    private func createStreamingDecryptedMP4(inputHandle: FileHandle, outputPath: String, track: MP4StructureParser.Track) throws {
         // Create output file
         FileManager.default.createFile(atPath: outputPath, contents: nil)
         guard let outputHandle = FileHandle(forWritingAtPath: outputPath) else {
@@ -169,69 +168,79 @@ public class AAXCSelectivePlayer {
         
         // Get file size
         let fileSize = inputHandle.seekToEndOfFile()
-        
+
         // Process file in chunks
         let chunkSize = 1024 * 1024 // 1MB chunks for non-audio data
         var currentPosition: UInt64 = 0
-        
-        // Create sorted list of audio sample ranges
-        let sampleRanges = audioSamples.map { (start: $0.offset, end: $0.offset + UInt64($0.size)) }.sorted { $0.start < $1.start }
-        var sampleIndex = 0
-        
-        debugLog("🔄 Processing file with \(audioSamples.count) audio samples...")
-        
-        while currentPosition < fileSize {
-            // Check if we're at an audio sample
-            var isAudioSample = false
-            var currentSample: MP4StructureParser.AudioSample?
-            
-            if sampleIndex < sampleRanges.count && currentPosition == sampleRanges[sampleIndex].start {
-                isAudioSample = true
-                currentSample = audioSamples[sampleIndex]
-            }
-            
-            if isAudioSample, let sample = currentSample {
-                // Process audio sample with decryption
+
+        // Streaming traversal of samples by chunk (no big arrays)
+        let totalSamples = track.sampleTable.sampleSizes.count
+        var globalSampleIndex = 0
+
+        debugLog("🔄 Processing file with \(totalSamples) audio samples (streaming)")
+
+        for (chunkIndex, chunkOffset) in track.sampleTable.chunkOffsets.enumerated() {
+            let samplesInChunk = Int(parser.getSamplesPerChunk(chunkIndex: chunkIndex, track: track))
+            var offsetInChunk: UInt64 = 0
+
+            for _ in 0..<samplesInChunk {
+                guard globalSampleIndex < totalSamples else { break }
+                let size = track.sampleTable.sampleSizes[globalSampleIndex]
+                let sampleOffset = chunkOffset + offsetInChunk
+
+                // Copy any non-audio bytes up to this sample
+                if currentPosition < sampleOffset {
+                    var remaining = sampleOffset - currentPosition
+                    while remaining > 0 {
+                        let toRead = Int(min(UInt64(chunkSize), remaining))
+                        autoreleasepool {
+                            inputHandle.seek(toFileOffset: currentPosition)
+                            let data = inputHandle.readData(ofLength: toRead)
+                            if !data.isEmpty { outputHandle.write(data) }
+                            currentPosition += UInt64(data.count)
+                            remaining -= UInt64(data.count)
+                        }
+                        if toRead == 0 { break }
+                    }
+                }
+
+                // Decrypt this sample streaming
+                let sample = MP4StructureParser.AudioSample(
+                    offset: sampleOffset,
+                    size: size,
+                    chunkIndex: chunkIndex,
+                    sampleIndex: globalSampleIndex
+                )
                 try processAudioSampleStreaming(
                     inputHandle: inputHandle,
                     outputHandle: outputHandle,
                     sample: sample,
                     cryptor: validCryptor
                 )
-                currentPosition = sample.offset + UInt64(sample.size)
-                sampleIndex += 1
-                
-                if sampleIndex % 50000 == 0 || sampleIndex == audioSamples.count {
-                    debugLog("   Processed \(sampleIndex)/\(audioSamples.count) audio samples")
+
+                currentPosition = sampleOffset + UInt64(size)
+                offsetInChunk += UInt64(size)
+                globalSampleIndex += 1
+
+                if globalSampleIndex % 50000 == 0 || globalSampleIndex == totalSamples {
+                    debugLog("   Processed \(globalSampleIndex)/\(totalSamples) audio samples")
                 }
-            } else {
-                // Calculate next chunk size
-                var nextChunkSize = chunkSize
-                if sampleIndex < sampleRanges.count {
-                    let bytesToNextSample = sampleRanges[sampleIndex].start - currentPosition
-                    nextChunkSize = min(chunkSize, Int(bytesToNextSample))
-                } else {
-                    let bytesRemaining = fileSize - currentPosition
-                    nextChunkSize = min(chunkSize, Int(bytesRemaining))
-                }
-                
-                if nextChunkSize > 0 {
-                    // Copy non-audio data directly
+            }
+        }
+
+        // Copy remaining tail after last sample
+        if currentPosition < fileSize {
+            var remaining = fileSize - currentPosition
+            while remaining > 0 {
+                let toRead = Int(min(UInt64(chunkSize), remaining))
+                autoreleasepool {
                     inputHandle.seek(toFileOffset: currentPosition)
-                    if let chunk = inputHandle.readData(ofLength: nextChunkSize) as Data?, !chunk.isEmpty {
-                        outputHandle.write(chunk)
-                        currentPosition += UInt64(chunk.count)
-                    } else {
-                        break
-                    }
-                } else {
-                    // Skip to next sample if needed
-                    if sampleIndex < sampleRanges.count {
-                        currentPosition = sampleRanges[sampleIndex].start
-                    } else {
-                        break
-                    }
+                    let data = inputHandle.readData(ofLength: toRead)
+                    if !data.isEmpty { outputHandle.write(data) }
+                    currentPosition += UInt64(data.count)
+                    remaining -= UInt64(data.count)
                 }
+                if toRead == 0 { break }
             }
         }
         
@@ -245,36 +254,39 @@ public class AAXCSelectivePlayer {
     /// Process a single audio sample using streaming
     private func processAudioSampleStreaming(inputHandle: FileHandle, outputHandle: FileHandle, sample: MP4StructureParser.AudioSample, cryptor: CCCryptorRef) throws {
         let sampleSize = Int(sample.size)
-        
+        let blockSize = 16
+        let ioBuffer = 256 * 1024 // 256KB I/O buffer per chunk
+        var remaining = sampleSize
+
         // Seek to sample position
         inputHandle.seek(toFileOffset: sample.offset)
-        
-        // Read encrypted sample
-        guard let encryptedSample = inputHandle.readData(ofLength: sampleSize) as Data?, encryptedSample.count == sampleSize else {
-            throw AAXCError.invalidSampleOffset
+
+        // Reset IV for each sample (CBC must restart per sample)
+        CCCryptorReset(cryptor, iv.withUnsafeBytes { $0.bindMemory(to: UInt8.self).baseAddress })
+
+        // Decrypt full 16-byte blocks using small chunks
+        while remaining >= blockSize {
+            autoreleasepool {
+                let toRead = min(ioBuffer, remaining)
+                let aligned = toRead - (toRead % blockSize)
+                if aligned <= 0 { return }
+
+                let encryptedChunk = inputHandle.readData(ofLength: aligned)
+                if encryptedChunk.isEmpty { return }
+
+                if let decrypted = try? decryptData(encryptedChunk, using: cryptor) {
+                    outputHandle.write(decrypted)
+                }
+                remaining -= encryptedChunk.count
+            }
         }
-        
-        // Only decrypt complete 16-byte blocks
-        let completeBlocks = sampleSize / 16
-        let bytesToDecrypt = completeBlocks * 16
-        let trailingBytes = sampleSize % 16
-        
-        if bytesToDecrypt > 0 {
-            let encryptedBlocks = encryptedSample.prefix(bytesToDecrypt)
-            
-            // CRITICAL: Reset IV for each sample
-            CCCryptorReset(cryptor, iv.withUnsafeBytes { $0.bindMemory(to: UInt8.self).baseAddress })
-            
-            let decryptedBlocks = try decryptData(encryptedBlocks, using: cryptor)
-            
-            // Write decrypted blocks
-            outputHandle.write(decryptedBlocks)
-        }
-        
+
         // Write any trailing bytes (< 16) unencrypted
-        if trailingBytes > 0 {
-            let trailing = encryptedSample.suffix(trailingBytes)
-            outputHandle.write(trailing)
+        if remaining > 0 {
+            let trailing = inputHandle.readData(ofLength: remaining)
+            if !trailing.isEmpty {
+                outputHandle.write(trailing)
+            }
         }
     }
     
