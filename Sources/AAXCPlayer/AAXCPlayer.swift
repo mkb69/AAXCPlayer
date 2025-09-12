@@ -81,22 +81,45 @@ public class AAXCPlayer {
         return result
     }
     
-    /// Convert AAXC to M4A using selective decryption (recommended approach)
-    /// - Parameter inputData: AAXC file data
-    /// - Returns: Decrypted M4A file data
-    public func convertToM4A(inputData: Data) throws -> Data {
-        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: inputData)
-        return try player.convertToM4A()
+    
+    /// Convert AAXC file to M4A file using streaming
+    /// - Parameters:
+    ///   - inputPath: Path to input AAXC file
+    ///   - outputPath: Path to output M4A file
+    /// - Note: This method streams the file and doesn't load it entirely into memory
+    public func convertToM4A(inputPath: String, outputPath: String) throws {
+        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputPath: inputPath)
+        try player.convertToM4A(outputPath: outputPath)
+    }
+    
+    /// Convert AAXC file to M4A file using streaming
+    /// - Parameters:
+    ///   - inputURL: URL to input AAXC file
+    ///   - outputURL: URL to output M4A file
+    /// - Note: This method streams the file and doesn't load it entirely into memory
+    public func convertToM4A(inputURL: URL, outputURL: URL) throws {
+        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputURL: inputURL)
+        try player.convertToM4A(outputPath: outputURL.path)
     }
     
     /// Extract metadata from AAXC file without decrypting
-    /// - Parameter inputData: AAXC file data
+    /// - Parameter inputPath: Path to the AAXC file
     /// - Returns: Metadata extracted from the file including title, artist, chapters, etc.
     /// - Throws: `MP4ParserError` if the file structure is invalid
     /// - Note: This method only reads metadata without performing any decryption
-    public func extractMetadata(inputData: Data) throws -> MP4StructureParser.Metadata {
-        let parser = MP4StructureParser(data: inputData)
-        return try parser.parseMetadata()
+    public func extractMetadata(inputPath: String) throws -> MP4StructureParser.Metadata {
+        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputPath: inputPath)
+        return try player.parseMetadata()
+    }
+    
+    /// Extract metadata from AAXC file without decrypting
+    /// - Parameter inputURL: URL to the AAXC file
+    /// - Returns: Metadata extracted from the file including title, artist, chapters, etc.
+    /// - Throws: `MP4ParserError` if the file structure is invalid
+    /// - Note: This method only reads metadata without performing any decryption
+    public func extractMetadata(inputURL: URL) throws -> MP4StructureParser.Metadata {
+        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputURL: inputURL)
+        return try player.parseMetadata()
     }
     
     // MARK: - Private Methods

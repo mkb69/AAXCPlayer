@@ -148,13 +148,35 @@ public class MP4StructureParser {
         }
     }
     
-    public let data: Data
-    private var position: Int = 0
+    private let fileHandle: FileHandle
+    private let fileSize: UInt64
+    private var position: UInt64 = 0
     
-    public init(data: Data) {
-        self.data = data
+    public init(fileHandle: FileHandle) {
+        self.fileHandle = fileHandle
+        self.fileSize = fileHandle.seekToEndOfFile()
+        fileHandle.seek(toFileOffset: 0)
     }
     
+    
+    /// Read data from file at specific offset
+    private func readData(at offset: UInt64, length: Int) throws -> Data {
+        fileHandle.seek(toFileOffset: offset)
+        guard let data = fileHandle.readData(ofLength: length) as Data?,
+              data.count == length else {
+            throw MP4ParserError.invalidData
+        }
+        return data
+    }
+    
+    /// Read complete atom content (for small atoms like metadata)
+    private func readAtomContent(_ atom: Atom) throws -> Data {
+        // Only read reasonable sized atoms into memory (< 10 MB)
+        guard atom.dataSize < 10_000_000 else {
+            throw MP4ParserError.invalidAtomSize
+        }
+        return try readData(at: atom.dataOffset, length: Int(atom.dataSize))
+    }
     
     /// Parse the complete MP4 structure and extract track information
     public func parseStructure() throws -> (tracks: [Track], mdatOffset: UInt64, mdatSize: UInt64) {
@@ -164,7 +186,7 @@ public class MP4StructureParser {
         var mdatSize: UInt64 = 0
         
         // Parse top-level atoms
-        while position < data.count {
+        while position < fileSize {
             guard let atom = try parseAtom() else { break }
             
             switch atom.type {
@@ -179,7 +201,7 @@ public class MP4StructureParser {
                 break
             }
             
-            position = Int(atom.dataOffset + atom.dataSize)
+            position = atom.dataOffset + atom.dataSize
         }
         
         return (tracks: tracks, mdatOffset: mdatOffset, mdatSize: mdatSize)
@@ -192,7 +214,7 @@ public class MP4StructureParser {
         var tracks: [Track] = []
         
         // Parse top-level atoms looking for metadata
-        while position < data.count {
+        while position < fileSize {
             guard let atom = try parseAtom() else { break }
             
             switch atom.type {
@@ -218,7 +240,7 @@ public class MP4StructureParser {
                 break
             }
             
-            position = Int(atom.dataOffset + atom.dataSize)
+            position = atom.dataOffset + atom.dataSize
         }
         
         // Extract chapters from tracks if available
@@ -286,15 +308,16 @@ public class MP4StructureParser {
     }
     
     private func parseAtom() throws -> Atom? {
-        guard position + 8 <= data.count else { return nil }
+        guard position + 8 <= fileSize else { return nil }
+        
+        // Read atom header (8 bytes)
+        let headerData = try readData(at: position, length: 8)
         
         // Read size (4 bytes)
-        let sizeData = data.subdata(in: position..<position+4)
-        let size = sizeData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        let size = headerData.prefix(4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
         
         // Read type (4 bytes)
-        let typeData = data.subdata(in: position+4..<position+8)
-        let type = String(data: typeData, encoding: .isoLatin1) ?? "unknown"
+        let type = String(data: headerData.suffix(4), encoding: .isoLatin1) ?? "unknown"
         
         var headerSize = 8
         var actualSize = UInt64(size)
@@ -302,19 +325,19 @@ public class MP4StructureParser {
         
         // Handle 64-bit size
         if size == 1 {
-            guard position + 16 <= data.count else { throw MP4ParserError.invalidAtomSize }
-            let extSizeData = data.subdata(in: position+8..<position+16)
+            guard position + 16 <= fileSize else { throw MP4ParserError.invalidAtomSize }
+            let extSizeData = try readData(at: position + 8, length: 8)
             actualSize = extSizeData.withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
             headerSize = 16
             extendedSize = true
         } else if size == 0 {
-            actualSize = UInt64(data.count - position)
+            actualSize = fileSize - position
         }
         
-        let dataOffset = UInt64(position + headerSize)
+        let dataOffset = position + UInt64(headerSize)
         let dataSize = actualSize - UInt64(headerSize)
         
-        guard dataOffset + dataSize <= data.count else {
+        guard dataOffset + dataSize <= fileSize else {
             throw MP4ParserError.invalidAtomSize
         }
         
@@ -329,7 +352,7 @@ public class MP4StructureParser {
     }
     
     private func validateAAXCBrand(_ atom: Atom) throws {
-        let brandData = data.subdata(in: Int(atom.dataOffset)..<Int(atom.dataOffset)+4)
+        let brandData = try readData(at: atom.dataOffset, length: 4)
         let brand = String(data: brandData, encoding: .ascii) ?? ""
         guard brand == "aaxc" else {
             throw MP4ParserError.notAAXCFile
@@ -340,8 +363,8 @@ public class MP4StructureParser {
         let savedPosition = position
         defer { position = savedPosition }
         
-        position = Int(moovAtom.dataOffset)
-        let endPosition = Int(moovAtom.dataOffset + moovAtom.dataSize)
+        position = moovAtom.dataOffset
+        let endPosition = moovAtom.dataOffset + moovAtom.dataSize
         var tracks: [Track] = []
         
         while position < endPosition {
@@ -353,7 +376,7 @@ public class MP4StructureParser {
                 }
             }
             
-            position = Int(atom.dataOffset + atom.dataSize)
+            position = atom.dataOffset + atom.dataSize
         }
         
         return tracks
@@ -363,8 +386,8 @@ public class MP4StructureParser {
         let savedPosition = position
         defer { position = savedPosition }
         
-        position = Int(trakAtom.dataOffset)
-        let endPosition = Int(trakAtom.dataOffset + trakAtom.dataSize)
+        position = trakAtom.dataOffset
+        let endPosition = trakAtom.dataOffset + trakAtom.dataSize
         
         var trackId: UInt32 = 0
         var mediaType: String = ""
@@ -390,7 +413,7 @@ public class MP4StructureParser {
                 break
             }
             
-            position = Int(atom.dataOffset + atom.dataSize)
+            position = atom.dataOffset + atom.dataSize
         }
         
         guard let validSampleTable = sampleTable else {
@@ -413,7 +436,7 @@ public class MP4StructureParser {
     }
     
     private func parseTrackHeader(_ tkhdAtom: Atom) throws -> UInt32 {
-        let headerData = data.subdata(in: Int(tkhdAtom.dataOffset)..<Int(tkhdAtom.dataOffset)+32)
+        let headerData = try readData(at: tkhdAtom.dataOffset, length: 32)
         
         // Read version/flags (4 bytes)
         let version = headerData[0]
@@ -433,8 +456,8 @@ public class MP4StructureParser {
         let savedPosition = position
         defer { position = savedPosition }
         
-        position = Int(mdiaAtom.dataOffset)
-        let endPosition = Int(mdiaAtom.dataOffset + mdiaAtom.dataSize)
+        position = mdiaAtom.dataOffset
+        let endPosition = mdiaAtom.dataOffset + mdiaAtom.dataSize
         
         var mediaType: String = ""
         var codec: String = ""
@@ -460,14 +483,14 @@ public class MP4StructureParser {
                 break
             }
             
-            position = Int(atom.dataOffset + atom.dataSize)
+            position = atom.dataOffset + atom.dataSize
         }
         
         return (mediaType: mediaType, codec: codec, sampleTable: sampleTable, duration: duration, timescale: timescale)
     }
     
     private func parseMediaHeader(_ mdhdAtom: Atom) throws -> (duration: UInt64, timescale: UInt32) {
-        let headerData = data.subdata(in: Int(mdhdAtom.dataOffset)..<Int(mdhdAtom.dataOffset)+32)
+        let headerData = try readData(at: mdhdAtom.dataOffset, length: 32)
         let version = headerData[0]
         
         if version == 1 {
@@ -492,7 +515,7 @@ public class MP4StructureParser {
     
     private func parseHandlerReference(_ hdlrAtom: Atom) throws -> String {
         guard hdlrAtom.dataSize >= 24 else { throw MP4ParserError.invalidAtomSize }
-        let handlerData = data.subdata(in: Int(hdlrAtom.dataOffset)+8..<Int(hdlrAtom.dataOffset)+12)
+        let handlerData = try readData(at: hdlrAtom.dataOffset + 8, length: 4)
         return String(data: handlerData, encoding: .ascii) ?? ""
     }
     
@@ -500,8 +523,8 @@ public class MP4StructureParser {
         let savedPosition = position
         defer { position = savedPosition }
         
-        position = Int(minfAtom.dataOffset)
-        let endPosition = Int(minfAtom.dataOffset + minfAtom.dataSize)
+        position = minfAtom.dataOffset
+        let endPosition = minfAtom.dataOffset + minfAtom.dataSize
         
         var codec: String = ""
         var sampleTable: SampleTable?
@@ -518,7 +541,7 @@ public class MP4StructureParser {
                 break
             }
             
-            position = Int(atom.dataOffset + atom.dataSize)
+            position = atom.dataOffset + atom.dataSize
         }
         
         return (codec: codec, sampleTable: sampleTable)
@@ -528,8 +551,8 @@ public class MP4StructureParser {
         let savedPosition = position
         defer { position = savedPosition }
         
-        position = Int(stblAtom.dataOffset)
-        let endPosition = Int(stblAtom.dataOffset + stblAtom.dataSize)
+        position = stblAtom.dataOffset
+        let endPosition = stblAtom.dataOffset + stblAtom.dataSize
         
         var codec: String = ""
         var sampleSizes: [UInt32] = []
@@ -557,7 +580,7 @@ public class MP4StructureParser {
                 break
             }
             
-            position = Int(atom.dataOffset + atom.dataSize)
+            position = atom.dataOffset + atom.dataSize
         }
         
         let sampleTable = SampleTable(
@@ -574,14 +597,14 @@ public class MP4StructureParser {
         guard stsdAtom.dataSize >= 16 else { throw MP4ParserError.invalidAtomSize }
         
         // Skip version/flags (4) + entry count (4) + sample description size (4)
-        let codecData = data.subdata(in: Int(stsdAtom.dataOffset)+12..<Int(stsdAtom.dataOffset)+16)
+        let codecData = try readData(at: stsdAtom.dataOffset + 12, length: 4)
         return String(data: codecData, encoding: .ascii) ?? ""
     }
     
     private func parseSampleSizes(_ stszAtom: Atom) throws -> [UInt32] {
         guard stszAtom.dataSize >= 12 else { throw MP4ParserError.invalidAtomSize }
         
-        let headerData = data.subdata(in: Int(stszAtom.dataOffset)..<Int(stszAtom.dataOffset)+12)
+        let headerData = try readData(at: stszAtom.dataOffset, length: 12)
         let sampleSize = headerData.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
         let sampleCount = headerData.subdata(in: 8..<12).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
         
@@ -594,8 +617,8 @@ public class MP4StructureParser {
             
             var sizes: [UInt32] = []
             for i in 0..<sampleCount {
-                let offset = Int(stszAtom.dataOffset) + 12 + Int(i * 4)
-                let sizeData = data.subdata(in: offset..<offset+4)
+                let offset = stszAtom.dataOffset + 12 + UInt64(i * 4)
+                let sizeData = try readData(at: offset, length: 4)
                 let size = sizeData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
                 sizes.append(size)
             }
@@ -606,15 +629,15 @@ public class MP4StructureParser {
     private func parseChunkOffsets32(_ stcoAtom: Atom) throws -> [UInt64] {
         guard stcoAtom.dataSize >= 8 else { throw MP4ParserError.invalidAtomSize }
         
-        let entryCountData = data.subdata(in: Int(stcoAtom.dataOffset)+4..<Int(stcoAtom.dataOffset)+8)
+        let entryCountData = try readData(at: stcoAtom.dataOffset + 4, length: 4)
         let entryCount = entryCountData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
         
         guard stcoAtom.dataSize >= 8 + UInt64(entryCount * 4) else { throw MP4ParserError.invalidAtomSize }
         
         var offsets: [UInt64] = []
         for i in 0..<entryCount {
-            let offset = Int(stcoAtom.dataOffset) + 8 + Int(i * 4)
-            let offsetData = data.subdata(in: offset..<offset+4)
+            let offset = stcoAtom.dataOffset + 8 + UInt64(i * 4)
+            let offsetData = try readData(at: offset, length: 4)
             let chunkOffset = UInt64(offsetData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
             offsets.append(chunkOffset)
         }
@@ -624,15 +647,15 @@ public class MP4StructureParser {
     private func parseChunkOffsets64(_ co64Atom: Atom) throws -> [UInt64] {
         guard co64Atom.dataSize >= 8 else { throw MP4ParserError.invalidAtomSize }
         
-        let entryCountData = data.subdata(in: Int(co64Atom.dataOffset)+4..<Int(co64Atom.dataOffset)+8)
+        let entryCountData = try readData(at: co64Atom.dataOffset + 4, length: 4)
         let entryCount = entryCountData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
         
         guard co64Atom.dataSize >= 8 + UInt64(entryCount * 8) else { throw MP4ParserError.invalidAtomSize }
         
         var offsets: [UInt64] = []
         for i in 0..<entryCount {
-            let offset = Int(co64Atom.dataOffset) + 8 + Int(i * 8)
-            let offsetData = data.subdata(in: offset..<offset+8)
+            let offset = co64Atom.dataOffset + 8 + UInt64(i * 8)
+            let offsetData = try readData(at: offset, length: 8)
             let chunkOffset = offsetData.withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
             offsets.append(chunkOffset)
         }
@@ -642,15 +665,15 @@ public class MP4StructureParser {
     private func parseSampleToChunk(_ stscAtom: Atom) throws -> [SampleToChunk] {
         guard stscAtom.dataSize >= 8 else { throw MP4ParserError.invalidAtomSize }
         
-        let entryCountData = data.subdata(in: Int(stscAtom.dataOffset)+4..<Int(stscAtom.dataOffset)+8)
+        let entryCountData = try readData(at: stscAtom.dataOffset + 4, length: 4)
         let entryCount = entryCountData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
         
         guard stscAtom.dataSize >= 8 + UInt64(entryCount * 12) else { throw MP4ParserError.invalidAtomSize }
         
         var entries: [SampleToChunk] = []
         for i in 0..<entryCount {
-            let offset = Int(stscAtom.dataOffset) + 8 + Int(i * 12)
-            let entryData = data.subdata(in: offset..<offset+12)
+            let offset = stscAtom.dataOffset + 8 + UInt64(i * 12)
+            let entryData = try readData(at: offset, length: 12)
             
             let firstChunk = entryData.subdata(in: 0..<4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
             let samplesPerChunk = entryData.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
@@ -668,15 +691,15 @@ public class MP4StructureParser {
     private func parseTimeToSample(_ sttsAtom: Atom) throws -> [TimeToSample] {
         guard sttsAtom.dataSize >= 8 else { throw MP4ParserError.invalidAtomSize }
         
-        let entryCountData = data.subdata(in: Int(sttsAtom.dataOffset)+4..<Int(sttsAtom.dataOffset)+8)
+        let entryCountData = try readData(at: sttsAtom.dataOffset + 4, length: 4)
         let entryCount = entryCountData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
         
         guard sttsAtom.dataSize >= 8 + UInt64(entryCount * 8) else { throw MP4ParserError.invalidAtomSize }
         
         var entries: [TimeToSample] = []
         for i in 0..<entryCount {
-            let offset = Int(sttsAtom.dataOffset) + 8 + Int(i * 8)
-            let entryData = data.subdata(in: offset..<offset+8)
+            let offset = sttsAtom.dataOffset + 8 + UInt64(i * 8)
+            let entryData = try readData(at: offset, length: 8)
             
             let sampleCount = entryData.subdata(in: 0..<4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
             let sampleDuration = entryData.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
@@ -707,8 +730,8 @@ public class MP4StructureParser {
         let savedPosition = position
         defer { position = savedPosition }
         
-        position = Int(moovAtom.dataOffset)
-        let endPosition = Int(moovAtom.dataOffset + moovAtom.dataSize)
+        position = moovAtom.dataOffset
+        let endPosition = moovAtom.dataOffset + moovAtom.dataSize
         var tracks: [Track] = []
         var metadata: Metadata?
         
@@ -746,7 +769,7 @@ public class MP4StructureParser {
                 break
             }
             
-            position = Int(atom.dataOffset + atom.dataSize)
+            position = atom.dataOffset + atom.dataSize
         }
         
         return (tracks: tracks, metadata: metadata)
@@ -756,8 +779,8 @@ public class MP4StructureParser {
         let savedPosition = position
         defer { position = savedPosition }
         
-        position = Int(udtaAtom.dataOffset)
-        let endPosition = Int(udtaAtom.dataOffset + udtaAtom.dataSize)
+        position = udtaAtom.dataOffset
+        let endPosition = udtaAtom.dataOffset + udtaAtom.dataSize
         var metadata = Metadata()
         var hasMetadata = false
         
@@ -776,7 +799,7 @@ public class MP4StructureParser {
                 }
             }
             
-            position = Int(atom.dataOffset + atom.dataSize)
+            position = atom.dataOffset + atom.dataSize
         }
         
         return hasMetadata ? metadata : nil
@@ -787,8 +810,8 @@ public class MP4StructureParser {
         defer { position = savedPosition }
         
         // Skip version/flags (4 bytes) if present
-        position = Int(metaAtom.dataOffset) + 4
-        let endPosition = Int(metaAtom.dataOffset + metaAtom.dataSize)
+        position = metaAtom.dataOffset + 4
+        let endPosition = metaAtom.dataOffset + metaAtom.dataSize
         
         var metadata: Metadata?
         
@@ -810,7 +833,7 @@ public class MP4StructureParser {
                 break
             }
             
-            position = Int(atom.dataOffset + atom.dataSize)
+            position = atom.dataOffset + atom.dataSize
         }
         
         return metadata
@@ -820,8 +843,8 @@ public class MP4StructureParser {
         let savedPosition = position
         defer { position = savedPosition }
         
-        position = Int(ilstAtom.dataOffset)
-        let endPosition = Int(ilstAtom.dataOffset + ilstAtom.dataSize)
+        position = ilstAtom.dataOffset
+        let endPosition = ilstAtom.dataOffset + ilstAtom.dataSize
         var metadata = Metadata()
         
         while position < endPosition {
@@ -857,7 +880,7 @@ public class MP4StructureParser {
                 break
             }
             
-            position = Int(atom.dataOffset + atom.dataSize)
+            position = atom.dataOffset + atom.dataSize
         }
         
         return metadata
@@ -867,8 +890,8 @@ public class MP4StructureParser {
         let savedPosition = position
         defer { position = savedPosition }
         
-        position = Int(atom.dataOffset)
-        let endPosition = Int(atom.dataOffset + atom.dataSize)
+        position = atom.dataOffset
+        let endPosition = atom.dataOffset + atom.dataSize
         
         // Look for data atom inside
         while position < endPosition {
@@ -876,22 +899,21 @@ public class MP4StructureParser {
             
             if dataAtom.type == "data" && dataAtom.dataSize >= 8 {
                 // Skip type and locale (8 bytes)
-                let stringStart = Int(dataAtom.dataOffset) + 8
                 let stringLength = Int(dataAtom.dataSize) - 8
                 
-                if stringStart + stringLength <= data.count && stringLength > 0 {
-                    let stringData = data.subdata(in: stringStart..<stringStart + stringLength)
+                if stringLength > 0 {
+                    let stringData = try readData(at: dataAtom.dataOffset + 8, length: stringLength)
                     if let result = String(data: stringData, encoding: .utf8) {
                         return result
                     } else {
                         debugLog("⚠️ Failed to decode string metadata as UTF-8")
                     }
                 } else {
-                    debugLog("⚠️ Invalid string metadata bounds: start=\(stringStart), length=\(stringLength), dataSize=\(data.count)")
+                    debugLog("⚠️ Invalid string metadata length: \(stringLength)")
                 }
             }
             
-            position = Int(dataAtom.dataOffset + dataAtom.dataSize)
+            position = dataAtom.dataOffset + dataAtom.dataSize
         }
         
         debugLog("⚠️ No data atom found in metadata atom \(atom.type)")
@@ -902,8 +924,8 @@ public class MP4StructureParser {
         let savedPosition = position
         defer { position = savedPosition }
         
-        position = Int(atom.dataOffset)
-        let endPosition = Int(atom.dataOffset + atom.dataSize)
+        position = atom.dataOffset
+        let endPosition = atom.dataOffset + atom.dataSize
         
         // Look for data atom inside
         while position < endPosition {
@@ -911,18 +933,17 @@ public class MP4StructureParser {
             
             if dataAtom.type == "data" && dataAtom.dataSize >= 8 {
                 // Skip type and flags (8 bytes)
-                let imageStart = Int(dataAtom.dataOffset) + 8
                 let imageLength = Int(dataAtom.dataSize) - 8
                 
-                if imageStart + imageLength <= data.count && imageLength > 0 {
+                if imageLength > 0 {
                     debugLog("🖼️ Found cover art: \(imageLength) bytes")
-                    return data.subdata(in: imageStart..<imageStart + imageLength)
+                    return try readData(at: dataAtom.dataOffset + 8, length: imageLength)
                 } else {
-                    debugLog("⚠️ Invalid cover art bounds: start=\(imageStart), length=\(imageLength), dataSize=\(data.count)")
+                    debugLog("⚠️ Invalid cover art length: \(imageLength)")
                 }
             }
             
-            position = Int(dataAtom.dataOffset + dataAtom.dataSize)
+            position = dataAtom.dataOffset + dataAtom.dataSize
         }
         
         debugLog("⚠️ No cover art data atom found")
@@ -1012,15 +1033,17 @@ public class MP4StructureParser {
             return nil
         }
         
+        // Read the sample data from file
         let chunkOffset = track.sampleTable.chunkOffsets[chunkIndex]
-        let sampleOffset = Int(chunkOffset + offsetInChunk)
+        let sampleOffset = chunkOffset + offsetInChunk
         let sampleSize = Int(track.sampleTable.sampleSizes[sampleIndex])
         
-        guard sampleOffset + sampleSize <= data.count else {
+        do {
+            return try readData(at: sampleOffset, length: sampleSize)
+        } catch {
+            debugLog("⚠️ Failed to read sample data at offset \(sampleOffset): \(error)")
             return nil
         }
-        
-        return data.subdata(in: sampleOffset..<sampleOffset + sampleSize)
     }
     
     private func parseChapterTitle(from data: Data) -> String? {
@@ -1029,7 +1052,7 @@ public class MP4StructureParser {
         
         // Try parsing as a QuickTime text sample (common for chapters)
         // Format: 2-byte length + text
-        let textLength = data.subdata(in: 0..<2).withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }
+        let textLength = data.prefix(2).withUnsafeBytes { $0.load(as: UInt16.self).bigEndian }
         
         guard data.count >= 2 + Int(textLength) else {
             // Try without length prefix
@@ -1042,7 +1065,7 @@ public class MP4StructureParser {
             return nil
         }
         
-        let textData = data.subdata(in: 2..<2 + Int(textLength))
+        let textData = data.dropFirst(2).prefix(Int(textLength))
         
         // Try UTF-8 first, then UTF-16
         if let title = String(data: textData, encoding: .utf8) {
@@ -1085,4 +1108,5 @@ public enum MP4ParserError: Error {
     case notAAXCFile
     case noAudioTrack
     case invalidTrackStructure
+    case invalidData
 }

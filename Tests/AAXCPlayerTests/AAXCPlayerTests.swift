@@ -54,21 +54,24 @@ final class AAXCPlayerTests: XCTestCase {
             return
         }
         
-        // Create minimal test data (just enough to not crash)
+        // Create a temporary test file
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("test.aaxc")
         let testData = Data(count: 1024)
+        try testData.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
         
-        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputData: testData)
+        let player = try AAXCSelectivePlayer(key: key, iv: iv, inputPath: tempURL.path)
         XCTAssertNotNil(player)
         
         // Test with invalid key size
         let invalidKey = Data(count: 8)
-        XCTAssertThrowsError(try AAXCSelectivePlayer(key: invalidKey, iv: iv, inputData: testData)) { error in
+        XCTAssertThrowsError(try AAXCSelectivePlayer(key: invalidKey, iv: iv, inputPath: tempURL.path)) { error in
             XCTAssertEqual(error as? AAXCError, .invalidKeySize)
         }
         
         // Test with invalid IV size
         let invalidIV = Data(count: 8)
-        XCTAssertThrowsError(try AAXCSelectivePlayer(key: key, iv: invalidIV, inputData: testData)) { error in
+        XCTAssertThrowsError(try AAXCSelectivePlayer(key: key, iv: invalidIV, inputPath: tempURL.path)) { error in
             XCTAssertEqual(error as? AAXCError, .invalidIVSize)
         }
     }
@@ -136,7 +139,7 @@ final class AAXCPlayerTests: XCTestCase {
         XCTAssertEqual(result1, result2)
     }
     
-    func testMP4StructureParser() {
+    func testMP4StructureParser() throws {
         // Test with minimal MP4-like data
         let testData = Data([
             // Minimal ftyp box
@@ -150,9 +153,17 @@ final class AAXCPlayerTests: XCTestCase {
             0x6d, 0x70, 0x34, 0x32, // "mp42"
         ])
         
-        let parser = MP4StructureParser(data: testData)
+        // Create a temporary file with test data
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("test_mp4.aaxc")
+        try testData.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        
+        // Open file handle and create parser
+        let fileHandle = try FileHandle(forReadingFrom: tempURL)
+        defer { try? fileHandle.close() }
+        
+        let parser = MP4StructureParser(fileHandle: fileHandle)
         XCTAssertNotNil(parser)
-        XCTAssertEqual(parser.data.count, testData.count)
     }
     
     func testKeyValidation() {
