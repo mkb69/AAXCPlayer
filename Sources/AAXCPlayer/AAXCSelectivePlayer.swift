@@ -44,9 +44,8 @@ public class AAXCSelectivePlayer {
         }
         self.inputFileHandle = handle
         
-        // Read file data for parser (this still loads full file for parsing, but we'll optimize later)
-        let inputData = try Data(contentsOf: URL(fileURLWithPath: inputPath))
-        self.parser = MP4StructureParser(data: inputData)
+        // Use streaming parser with file handle
+        self.parser = MP4StructureParser(fileHandle: handle)
     }
     
     /// Initialize with URL for streaming (recommended for large files)
@@ -61,9 +60,8 @@ public class AAXCSelectivePlayer {
         // Open file handle for reading
         self.inputFileHandle = try FileHandle(forReadingFrom: inputURL)
         
-        // Read file data for parser
-        let inputData = try Data(contentsOf: inputURL)
-        self.parser = MP4StructureParser(data: inputData)
+        // Use streaming parser with file handle
+        self.parser = MP4StructureParser(fileHandle: inputFileHandle)
     }
     
     
