@@ -244,11 +244,21 @@ public class MP4StructureParser {
         }
         
         // Extract chapters from tracks if available
+        // Note: Chapter tracks have type "text" or "sbtl" (subtitle)
         for track in tracks {
             if track.mediaType == "text" || track.mediaType == "sbtl" {
-                // This might be a chapter track
+                // This is a chapter track containing chapter markers
                 do {
-                    if let chapters = try extractChaptersFromTrack(track) {
+                    // Calculate the total audiobook duration in seconds for the last chapter's end time
+                    // The chapter track's duration may be shorter than the actual audio duration
+                    let audiobookDurationInSeconds: Double?
+                    if metadata.duration > 0 && metadata.timescale > 0 {
+                        audiobookDurationInSeconds = Double(metadata.duration) / Double(metadata.timescale)
+                    } else {
+                        audiobookDurationInSeconds = nil
+                    }
+
+                    if let chapters = try extractChaptersFromTrack(track, audiobookDurationInSeconds: audiobookDurationInSeconds) {
                         metadata.chapters.append(contentsOf: chapters)
                         debugLog("📖 Extracted \(chapters.count) chapters from track")
                     }
@@ -950,7 +960,12 @@ public class MP4StructureParser {
         return nil
     }
     
-    private func extractChaptersFromTrack(_ track: Track) throws -> [Chapter]? {
+    /// Extracts chapter information from a text/subtitle track
+    /// - Parameters:
+    ///   - track: The chapter track containing chapter markers
+    ///   - audiobookDurationInSeconds: The total duration of the audiobook in seconds (used for last chapter's end time)
+    /// - Returns: Array of chapters with start/end times and titles
+    private func extractChaptersFromTrack(_ track: Track, audiobookDurationInSeconds: Double? = nil) throws -> [Chapter]? {
         guard track.mediaType == "text" || track.mediaType == "sbtl" else {
             return nil
         }
@@ -983,12 +998,27 @@ public class MP4StructureParser {
                 if let chapterTitle = parseChapterTitle(from: chapterData) {
                     let startTime = startTimeUnits / Double(track.timescale)
                     
-                    // End time is the start of the next chapter, or track duration
+                    // Calculate the end time for this chapter:
+                    // - For all chapters except the last: use the start time of the next chapter
+                    // - For the last chapter: use the total audiobook duration
+                    //   (The chapter track's duration might be shorter than the actual audio)
                     let endTime: Double
-                    if i + 1 < sampleTimes.count {
-                        endTime = sampleTimes[i + 1].time / Double(track.timescale)
+                    let isLastChapter = (i + 1 >= sampleTimes.count)
+
+                    if !isLastChapter {
+                        // Not the last chapter - use next chapter's start time
+                        let nextChapterStartTimeInTimescaleUnits = sampleTimes[i + 1].time
+                        endTime = nextChapterStartTimeInTimescaleUnits / Double(track.timescale)
                     } else {
-                        endTime = Double(track.duration) / Double(track.timescale)
+                        // Last chapter - use total audiobook duration if available
+                        if let audiobookDurationInSeconds = audiobookDurationInSeconds {
+                            endTime = audiobookDurationInSeconds
+                        } else {
+                            // Fallback: use chapter track's duration (may be incorrect for last chapter)
+                            let trackDurationInSeconds = Double(track.duration) / Double(track.timescale)
+                            endTime = trackDurationInSeconds
+                            debugLog("⚠️ Using chapter track duration for last chapter - may be incorrect")
+                        }
                     }
                     
                     chapters.append(Chapter(
