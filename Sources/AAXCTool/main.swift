@@ -38,6 +38,48 @@ func trackMemory(label: String, baseline: UInt64) -> UInt64 {
     return current
 }
 
+/// Get current CPU time using rusage
+func getCurrentCPUTime() -> (user: Double, system: Double, total: Double)? {
+    var usage = rusage()
+    guard getrusage(RUSAGE_SELF, &usage) == 0 else {
+        return nil
+    }
+
+    let userTime = Double(usage.ru_utime.tv_sec) +
+                   Double(usage.ru_utime.tv_usec) / 1_000_000.0
+    let systemTime = Double(usage.ru_stime.tv_sec) +
+                    Double(usage.ru_stime.tv_usec) / 1_000_000.0
+
+    return (userTime, systemTime, userTime + systemTime)
+}
+
+/// Format time as milliseconds or seconds
+func formatTime(_ seconds: Double) -> String {
+    if seconds < 1.0 {
+        return String(format: "%.0f ms", seconds * 1000.0)
+    }
+    return String(format: "%.3f s", seconds)
+}
+
+/// Track CPU time with label
+func trackCPU(label: String, baseline: (user: Double, system: Double, total: Double)) -> (user: Double, system: Double, total: Double) {
+    guard let current = getCurrentCPUTime() else {
+        print("⚠️ Could not get CPU time")
+        return baseline
+    }
+
+    let userDelta = current.user - baseline.user
+    let systemDelta = current.system - baseline.system
+    let totalDelta = current.total - baseline.total
+
+    print("⚡️ \(label):")
+    print("   User:   \(formatTime(userDelta))")
+    print("   System: \(formatTime(systemDelta))")
+    print("   Total:  \(formatTime(totalDelta))")
+
+    return current
+}
+
 /// Command-line tool to test the AAXCPlayer
 print("🎵 AAXCPlayer test")
 print(String(repeating: "=", count: 70))
@@ -55,6 +97,10 @@ print()
 let baselineMemory = getCurrentMemoryUsage()
 var peakMemory = baselineMemory
 print("💾 Baseline memory: \(formatMemory(baselineMemory))")
+
+// Initialize CPU tracking
+let baselineCPU = getCurrentCPUTime() ?? (0, 0, 0)
+print("⚡️ Baseline CPU time: \(formatTime(baselineCPU.total))")
 print()
 
 do {
@@ -77,7 +123,10 @@ do {
     // Track memory after loading keys
     currentMemory = trackMemory(label: "After loading keys", baseline: baselineMemory)
     peakMemory = max(peakMemory, currentMemory)
-    
+
+    // Track CPU after loading keys
+    var currentCPU = trackCPU(label: "After loading keys", baseline: baselineCPU)
+
     guard let keyHex = keysJson["key"], let ivHex = keysJson["iv"] else {
         print("❌ Invalid keys.json format")
         exit(1)
@@ -99,7 +148,10 @@ do {
     // Track memory after creating player (this loads the file for parsing)
     currentMemory = trackMemory(label: "After creating player", baseline: baselineMemory)
     peakMemory = max(peakMemory, currentMemory)
-    
+
+    // Track CPU after creating player
+    currentCPU = trackCPU(label: "After creating player", baseline: baselineCPU)
+
     // Extract metadata first (no decryption needed)
     print("📚 Extracting metadata...")
     let metadata = try player.parseMetadata()
@@ -107,17 +159,26 @@ do {
     // Track memory after metadata extraction
     currentMemory = trackMemory(label: "After metadata extraction", baseline: baselineMemory)
     peakMemory = max(peakMemory, currentMemory)
-    
+
+    // Track CPU after metadata extraction
+    currentCPU = trackCPU(label: "After metadata extraction", baseline: baselineCPU)
+
     // Convert AAXC to M4A with selective decryption using streaming
     print("🔧 Converting with selective decryption (streaming mode)...")
     let conversionStartMemory = currentMemory
+    let conversionStartCPU = currentCPU
     try player.convertToM4A(outputPath: outputPath)
-    
+
     // Track memory after conversion
     currentMemory = trackMemory(label: "After conversion complete", baseline: baselineMemory)
     peakMemory = max(peakMemory, currentMemory)
     let conversionMemoryDelta = currentMemory - conversionStartMemory
     print("   Conversion memory delta: \(conversionMemoryDelta > 0 ? "+" : "")\(formatMemory(UInt64(abs(Int64(conversionMemoryDelta)))))")
+
+    // Track CPU after conversion
+    currentCPU = trackCPU(label: "After conversion complete", baseline: baselineCPU)
+    let conversionCPUDelta = currentCPU.total - conversionStartCPU.total
+    print("   Conversion CPU delta: \(formatTime(conversionCPUDelta))")
     
     print("💾 Saved M4A to: \(outputPath)")
     
@@ -154,7 +215,43 @@ do {
         print("   ❌ Memory usage exceeds file size - check for leaks")
     }
     print(String(repeating: "-", count: 70))
-    
+
+    print()
+
+    // CPU usage report
+    print("📊 CPU USAGE REPORT")
+    print(String(repeating: "-", count: 70))
+    print("   User time:          \(formatTime(currentCPU.user))")
+    print("   System time:        \(formatTime(currentCPU.system))")
+    print("   Total CPU time:     \(formatTime(currentCPU.total))")
+
+    // Calculate CPU metrics
+    let userSystemRatio = currentCPU.user / max(currentCPU.system, 0.001)
+    print("   User/System ratio:  \(String(format: "%.2f", userSystemRatio))")
+
+    let cpuPerMB = currentCPU.total / (Double(inputSize) / 1024.0 / 1024.0)
+    print("   CPU time per MB:    \(formatTime(cpuPerMB))")
+
+    // CPU efficiency assessment
+    if cpuPerMB < 0.1 {
+        print("   ✅ Excellent CPU efficiency!")
+    } else if cpuPerMB < 0.5 {
+        print("   ⚠️  Good, but may be slow on older devices")
+    } else {
+        print("   ❌ High CPU usage - optimization needed for older devices")
+    }
+    print(String(repeating: "-", count: 70))
+
+    print()
+
+    // Machine-parseable metrics for scripting
+    print("METRIC,CPUTotal,\(currentCPU.total)")
+    print("METRIC,CPUUser,\(currentCPU.user)")
+    print("METRIC,CPUSystem,\(currentCPU.system)")
+    print("METRIC,CPUPerMB,\(cpuPerMB)")
+    print("METRIC,PeakMemory,\(Double(peakMemory) / 1024.0 / 1024.0)")
+    print("METRIC,InputSizeMB,\(Double(inputSize) / 1024.0 / 1024.0)")
+
     print()
     print("📋 What this proves:")
     print("   ✅ Swift can parse MP4 box structure")
