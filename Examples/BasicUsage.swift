@@ -187,10 +187,10 @@ extension Data {
     init?(hexString: String) {
         let cleanedHex = hexString.replacingOccurrences(of: " ", with: "")
         guard cleanedHex.count % 2 == 0 else { return nil }
-        
+
         var data = Data()
         var index = cleanedHex.startIndex
-        
+
         while index < cleanedHex.endIndex {
             let nextIndex = cleanedHex.index(index, offsetBy: 2)
             let byteString = cleanedHex[index..<nextIndex]
@@ -198,7 +198,28 @@ extension Data {
             data.append(byte)
             index = nextIndex
         }
-        
+
         self = data
     }
 }
+
+// MARK: - Advanced Usage
+
+/*
+ 📝 NOTE: This example shows basic foreground conversion.
+
+ For BACKGROUND PROCESSING with CPU throttling (recommended for production),
+ see BackgroundConversion.swift which demonstrates:
+
+ - ✅ CPU throttling to prevent iOS watchdog termination
+ - ✅ Async conversion with completion handlers
+ - ✅ Converting while audio is playing
+ - ✅ Configurable performance vs battery trade-offs
+ - ✅ Real-world production patterns
+
+ Background conversions are ESSENTIAL when:
+ - Your app performs conversion while in background mode
+ - Conversion happens during audio playback
+ - You need to support older devices (iPhone 6s/7/8 era)
+ - Battery efficiency is important
+ */

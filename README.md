@@ -22,9 +22,13 @@ This library exists solely to provide compatibility and accessibility for legall
 - ✅ AES-128 CBC decryption with surgical MP4 container conversion
 - ✅ Selective decryption that preserves MP4 structure
 - ✅ Native AVFoundation integration for seamless playback
+- ✅ **CPU throttling for background processing** - prevents iOS watchdog termination
+- ✅ Configurable performance vs battery trade-offs
+- ✅ Async API with QoS support for background tasks
 - ✅ Command-line tool for AAXC to M4A conversion
 - ✅ Metadata extraction (title, artist, chapters, cover art, etc.)
 - ✅ Comprehensive error handling
+- ✅ Performance benchmarking tools included
 - ✅ Unit tests included
 
 ## Requirements
@@ -71,12 +75,21 @@ Convert AAXC files to M4A format:
 #### Run Conversion
 
 ```bash
+# Fast mode (maximum performance, ~10.6s)
 swift run aaxc-tool
+
+# Balanced mode with CPU throttling (~12.6s, 84% CPU)
+swift run aaxc-tool -- --throttle
+
+# Aggressive throttling for background safety (~19.2s, 66% CPU)
+swift run aaxc-tool -- --aggressive-throttle
 ```
 
 Output will be saved as:
 - `test/swift.m4a` - The converted audio file
 - `test/swift.json` - Metadata extracted from the file
+
+See [CPU Throttling](#cpu-throttling-for-background-processing) section for details on choosing the right mode.
 
 ### Basic Usage in iOS App
 
@@ -182,11 +195,187 @@ func extractMetadataOnly(aaxcURL: URL) throws -> MP4StructureParser.Metadata {
     // Use the parser directly for efficiency
     let fileHandle = try FileHandle(forReadingFrom: aaxcURL)
     let parser = MP4StructureParser(fileHandle: fileHandle)
-    
+
     // Extract metadata without any decryption
     return try parser.parseMetadata()
 }
 ```
+
+## CPU Throttling for Background Processing
+
+AAXCPlayer includes configurable CPU throttling to prevent iOS watchdog termination when converting files in the background. This is **essential** when your app performs conversions while in background mode or while other CPU-intensive tasks are running (like audio playback).
+
+### Why CPU Throttling?
+
+iOS monitors CPU usage and terminates apps that exceed **80% CPU usage** over extended periods, especially in background mode. AAXC decryption is CPU-intensive and can trigger these watchdog kills.
+
+### Synchronous API (No Throttling)
+
+The default synchronous API provides maximum performance with no throttling:
+
+```swift
+import AAXCPlayer
+
+let player = try AAXCSelectivePlayer(key: key, iv: iv, inputPath: aaxcPath)
+
+// Fast synchronous conversion (no throttling)
+try player.convertToM4A(outputPath: outputPath)
+```
+
+**Best for**: Foreground conversions when user is waiting, or when performance is critical.
+
+### Asynchronous API with Throttling (Recommended for Background)
+
+Use the async API with CPU throttling enabled for background-safe processing:
+
+```swift
+import AAXCPlayer
+
+let player = try AAXCSelectivePlayer(key: key, iv: iv, inputPath: aaxcPath)
+
+// Enable CPU throttling for background safety
+player.cpuThrottlingEnabled = true
+player.yieldInterval = 500      // Yield every 500 samples (more frequent = safer)
+player.yieldDuration = 0.02     // 20ms sleep (longer = more battery efficient)
+player.qosClass = .utility      // Background priority
+
+// Convert asynchronously on background queue
+player.convertToM4AAsync(outputPath: outputPath) { result in
+    switch result {
+    case .success:
+        print("✅ Conversion complete!")
+        // Safe to play the file now
+    case .failure(let error):
+        print("❌ Conversion failed: \(error)")
+    }
+}
+```
+
+**Best for**: Background conversions, battery-constrained scenarios, older devices.
+
+### Configuration Parameters
+
+- **`cpuThrottlingEnabled`** (Bool, default: `false`)
+  - Enable/disable CPU throttling
+  - `false` = maximum performance
+  - `true` = apply throttling based on other parameters
+
+- **`yieldInterval`** (Int, default: `1000`)
+  - Number of audio samples to process before yielding CPU
+  - Lower = more frequent yields = safer but slower
+  - Higher = fewer yields = faster but higher CPU usage
+  - Recommended: 500-1000 for background safety
+
+- **`yieldDuration`** (TimeInterval, default: `0.01`)
+  - Duration to sleep when yielding CPU (in seconds)
+  - Longer = more battery efficient, lower CPU %
+  - Shorter = faster conversion
+  - Recommended: 0.01-0.02 seconds
+
+- **`qosClass`** (DispatchQoS.QoSClass, default: `.utility`)
+  - Quality of Service class for async operations
+  - `.utility` - Balanced for background work (recommended)
+  - `.background` - Lowest priority, most battery efficient
+  - `.default` - Higher priority, less battery efficient
+
+### Throttling Presets
+
+```swift
+// AGGRESSIVE (Maximum Safety)
+// Best for: Background conversion while audio is playing, older devices
+player.cpuThrottlingEnabled = true
+player.yieldInterval = 500      // Yield every 500 samples
+player.yieldDuration = 0.02     // 20ms sleep
+player.qosClass = .utility
+
+// BALANCED (Good Compromise)
+// Best for: Light background tasks, newer devices
+player.cpuThrottlingEnabled = true
+player.yieldInterval = 1000     // Yield every 1000 samples
+player.yieldDuration = 0.01     // 10ms sleep
+player.qosClass = .utility
+
+// CUSTOM
+// Tune for your specific requirements
+player.cpuThrottlingEnabled = true
+player.yieldInterval = 750      // Your custom interval
+player.yieldDuration = 0.015    // Your custom duration
+player.qosClass = .background   // Lowest priority
+```
+
+### Real-World Example: Background Conversion
+
+```swift
+import AAXCPlayer
+import AVFoundation
+
+class AudiobookConverter {
+    func convertInBackground(aaxcURL: URL, key: Data, iv: Data) {
+        do {
+            let player = try AAXCSelectivePlayer(key: key, iv: iv, inputURL: aaxcURL)
+
+            // Configure for background-safe processing
+            player.cpuThrottlingEnabled = true
+            player.yieldInterval = 500
+            player.yieldDuration = 0.02
+            player.qosClass = .utility
+
+            // Generate temporary output path
+            let outputURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("m4a")
+
+            // Convert asynchronously
+            player.convertToM4AAsync(outputPath: outputURL.path) { [weak self] result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success:
+                        // Conversion complete - safe to play
+                        self?.playConvertedFile(url: outputURL)
+                    case .failure(let error):
+                        self?.handleConversionError(error)
+                    }
+                }
+            }
+        } catch {
+            print("Failed to initialize player: \(error)")
+        }
+    }
+
+    private func playConvertedFile(url: URL) {
+        // Play using AVFoundation
+        let asset = AVAsset(url: url)
+        let playerItem = AVPlayerItem(asset: asset)
+        let avPlayer = AVPlayer(playerItem: playerItem)
+        avPlayer.play()
+    }
+
+    private func handleConversionError(_ error: Error) {
+        print("Conversion error: \(error)")
+    }
+}
+```
+
+### When to Use Throttling
+
+**❌ No Throttling** (`cpuThrottlingEnabled = false`)
+- User explicitly initiated conversion
+- App is in foreground
+- Performance is critical
+- Device is plugged in
+
+**✅ Standard Throttling** (interval: 1000, duration: 0.01)
+- Light background tasks
+- Device has good CPU/battery
+- Newer devices
+- Short conversions
+
+**✅✅ Aggressive Throttling** (interval: 500, duration: 0.02)
+- Background processing required
+- Audio playback happening simultaneously
+- Older devices (iPhone 6s/7/8 era)
+- Battery conservation important
+- **Recommended for production apps**
 
 ## How It Works
 
@@ -279,6 +468,12 @@ swift test
 - **Selective Decryption**: Only audio samples are decrypted, preserving container structure
 - **Efficient Processing**: Handles files of any size with minimal memory footprint
 - **In-Place Operations**: Minimizes memory allocations during decryption
+
+### CPU Usage
+- **Configurable Throttling**: Enable CPU throttling for background safety (see [CPU Throttling](#cpu-throttling-for-background-processing))
+- **iOS Watchdog Protection**: Throttling prevents app termination due to excessive CPU usage
+- **Battery Optimization**: Adjustable parameters allow balancing performance vs battery life
+- **QoS Integration**: Leverages iOS Quality of Service for system-managed priority
 
 ## Security Notes
 

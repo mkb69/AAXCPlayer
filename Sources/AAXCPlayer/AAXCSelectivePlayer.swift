@@ -15,13 +15,26 @@ public enum AAXCError: Error {
 
 /// Selective AAXC player that only decrypts audio samples while preserving MP4 container structure
 public class AAXCSelectivePlayer {
-    
+
     private let key: Data
     private let iv: Data
     private let parser: MP4StructureParser
     private let inputFileHandle: FileHandle
     private let inputFilePath: String
-    
+
+    // CPU Throttling Configuration (opt-in for background safety)
+    /// Enable CPU throttling to prevent iOS watchdog termination during background processing
+    public var cpuThrottlingEnabled: Bool = false
+
+    /// Number of samples to process before yielding CPU (default: 1000)
+    public var yieldInterval: Int = 1000
+
+    /// Duration to sleep when yielding CPU in seconds (default: 0.01 = 10ms)
+    public var yieldDuration: TimeInterval = 0.01
+
+    /// Quality of Service class for async operations (default: .utility for background work)
+    public var qosClass: DispatchQoS.QoSClass = .utility
+
     // Debug logging (only enabled in DEBUG builds)
     private func debugLog(_ message: String) {
         #if DEBUG
@@ -76,19 +89,19 @@ public class AAXCSelectivePlayer {
     
     
     
-    /// Convert AAXC to M4A file using streaming
+    /// Convert AAXC to M4A file using streaming (synchronous, no throttling)
     public func convertToM4A(outputPath: String) throws {
-        
+
         // Parse the complete MP4 structure
         let structure = try parser.parseStructure()
         debugLog("🔍 Parsed \(structure.tracks.count) tracks, mdat at offset \(structure.mdatOffset)")
-        
+
         // Find the first audio track
         guard let audioTrack = structure.tracks.first(where: { $0.mediaType == "soun" }) else {
             throw AAXCError.noAudioTrack
         }
         debugLog("🎵 Found audio track with \(audioTrack.sampleTable.sampleSizes.count) samples")
-        
+
         // Create streaming decrypted MP4 without materializing all sample locations
         try createStreamingDecryptedMP4(
             inputHandle: inputFileHandle,
@@ -98,7 +111,55 @@ public class AAXCSelectivePlayer {
         // Close input handle to drop file-backed caches ASAP
         close()
     }
-    
+
+    /// Convert AAXC to M4A file asynchronously with optional CPU throttling
+    ///
+    /// This method runs the conversion on a background queue with configurable QoS.
+    /// Use this for background processing to avoid iOS watchdog termination.
+    ///
+    /// - Parameters:
+    ///   - outputPath: Path where the M4A file should be written
+    ///   - completion: Callback with Result indicating success or failure
+    ///
+    /// - Note: Enable `cpuThrottlingEnabled = true` to prevent excessive CPU usage.
+    ///         Configure throttling behavior with `yieldInterval`, `yieldDuration`, and `qosClass`.
+    public func convertToM4AAsync(outputPath: String, completion: @escaping (Result<Void, Error>) -> Void) {
+
+        // Run on background queue with configured QoS
+        DispatchQueue.global(qos: qosClass).async { [weak self] in
+            guard let self = self else {
+                completion(.failure(AAXCError.invalidData))
+                return
+            }
+
+            do {
+                // Parse the complete MP4 structure
+                let structure = try self.parser.parseStructure()
+                self.debugLog("🔍 Parsed \(structure.tracks.count) tracks, mdat at offset \(structure.mdatOffset)")
+
+                // Find the first audio track
+                guard let audioTrack = structure.tracks.first(where: { $0.mediaType == "soun" }) else {
+                    throw AAXCError.noAudioTrack
+                }
+                self.debugLog("🎵 Found audio track with \(audioTrack.sampleTable.sampleSizes.count) samples")
+
+                // Create streaming decrypted MP4 (throttling applied inside if enabled)
+                try self.createStreamingDecryptedMP4(
+                    inputHandle: self.inputFileHandle,
+                    outputPath: outputPath,
+                    track: audioTrack
+                )
+
+                // Close input handle to drop file-backed caches ASAP
+                self.close()
+
+                completion(.success(()))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
     /// Parse metadata from AAXC file without decrypting audio
     public func parseMetadata() throws -> MP4StructureParser.Metadata {
         return try parser.parseMetadata()
@@ -221,6 +282,11 @@ public class AAXCSelectivePlayer {
                 currentPosition = sampleOffset + UInt64(size)
                 offsetInChunk += UInt64(size)
                 globalSampleIndex += 1
+
+                // CPU throttling: yield after I/O operations (optimal placement)
+                if cpuThrottlingEnabled && globalSampleIndex % yieldInterval == 0 {
+                    Thread.sleep(forTimeInterval: yieldDuration)
+                }
 
                 if globalSampleIndex % 50000 == 0 || globalSampleIndex == totalSamples {
                     debugLog("   Processed \(globalSampleIndex)/\(totalSamples) audio samples")

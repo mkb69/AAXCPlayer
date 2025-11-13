@@ -84,6 +84,11 @@ func trackCPU(label: String, baseline: (user: Double, system: Double, total: Dou
 print("🎵 AAXCPlayer test")
 print(String(repeating: "=", count: 70))
 
+// Parse command-line arguments
+let args = CommandLine.arguments
+let throttleEnabled = args.contains("--throttle")
+let aggressiveThrottle = args.contains("--aggressive-throttle")
+
 // Configuration
 let aaxcPath = "test/input.aaxc"
 let outputPath = "test/swift.m4a"
@@ -91,6 +96,13 @@ let outputPath = "test/swift.m4a"
 print("📁 Input:  \(aaxcPath)")
 print("📤 Output: \(outputPath)")
 print("🎯 Method: Selective decryption (streaming)")
+if aggressiveThrottle {
+    print("⚡️ CPU Throttling: AGGRESSIVE (maximum background safety)")
+} else if throttleEnabled {
+    print("⚡️ CPU Throttling: ENABLED (background-safe mode)")
+} else {
+    print("⚡️ CPU Throttling: DISABLED (maximum performance)")
+}
 print()
 
 // Initialize memory tracking
@@ -144,7 +156,20 @@ do {
     
     print("🏗️ Creating selective player with streaming support...")
     let player = try AAXCSelectivePlayer(key: key, iv: iv, inputPath: aaxcPath)
-    
+
+    // Enable CPU throttling if requested
+    if aggressiveThrottle {
+        player.cpuThrottlingEnabled = true
+        player.yieldInterval = 500   // Yield every 500 samples (more frequent)
+        player.yieldDuration = 0.02  // 20ms sleep (longer pauses)
+        player.qosClass = .utility   // Background priority
+    } else if throttleEnabled {
+        player.cpuThrottlingEnabled = true
+        player.yieldInterval = 1000  // Yield every 1000 samples
+        player.yieldDuration = 0.01  // 10ms sleep
+        player.qosClass = .utility   // Background priority
+    }
+
     // Track memory after creating player (this loads the file for parsing)
     currentMemory = trackMemory(label: "After creating player", baseline: baselineMemory)
     peakMemory = max(peakMemory, currentMemory)
